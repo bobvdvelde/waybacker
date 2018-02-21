@@ -92,10 +92,14 @@ def walk_times(start='now', end='now', step='-2sec'):
                 steps=steps, stepsize=stepsize, starttime=starttime, endtime=endtime))
 
     if endtime < starttime:
-        assert starttime + stepsize < starttime, "Steps to the past should be negative! (i.e. -2min)"
+        if not starttime + stepsize < starttime:
+            logger.info( "Steps to the past should be negative! (i.e. -2min)")
+        stepsize = relativedelta.relativedelta(-1*stepsecs)
         downward = True
     elif starttime > endtime:
-        assert starttime + stepsize > starttime, "Steps to the future should be positive! (i.e. 2min)"
+        if starttime + stepsize > starttime:
+            logger.info("Steps to the future should be positive! (i.e. 2min)")
+        stepsize = relativedelta.relativedelta(-1*stepsecs)
         downward = False
     start_datetime = starttime
     end_datetime = endtime
@@ -189,7 +193,10 @@ def check_last(filename):
     if filename in os.listdir(DATADIR):
         logger.debug("{filename} found in {DATADIR}".format(filename=filename, DATADIR=DATADIR))
         target = os.path.join(DATADIR, filename)
-        last = json.loads(os.popen('tail -n 1 {target}'.format(target=target)).read())
+        try:
+            last = json.loads(os.popen('tail -n 1 {target}'.format(target=target)).read())
+        except:
+            return {}
     else:
         last = {}
     return last
@@ -229,7 +236,7 @@ def main(url, from_time, to_time, stepsize, reset, debug, silent, batchsize = 10
             batch.append({'url':url, 'timestamp':start})
             if len(batch)==batchsize:
                 perc=(step/total)*100
-                logger.info("Processing {batchsize} pages for {url} at step {step} of {total} {perc:3.2f}".format(
+                logger.info("Processing {batchsize} pages for {url} at step {step:6.0f} of {total:6.0f} {perc:3.2f}%".format(
                 batchsize=batchsize, url=url, step=step, total=total, perc=perc))
                 retrieved = Parallel(threads)(delayed(get_page)(**args) for args in batch)
                 for hit in retrieved:
