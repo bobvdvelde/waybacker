@@ -233,29 +233,6 @@ def clean_filename(url):
     filename = ''.join([c for c in nodot if c in valid_chars])
     return filename
 
-def check_last(filename):
-    logger.debug('Checking {filename}'.format(filename=filename))
-    if filename in os.listdir(DATADIR):
-        logger.debug("{filename} found in {DATADIR}".format(filename=filename, DATADIR=DATADIR))
-        target = os.path.join(DATADIR, filename)
-        try:
-            last_part = os.popen('tail -n 3 {target}'.format(target=target)).read()
-            content = {}
-            for n,line in enumerate(last_part.split(os.linesep)):
-                try:
-                    content = json.loads(line)
-                except:
-                    badnum = 4-(n)
-                    logger.debug("Corrupted JSON found")
-                    os.popen("head -n-{badnum} {target} > {target}".format(badnum=badnum, target=target))
-                    break
-            return content
-            
-        except:
-            return {}
-    else:
-        last = {}
-    return last
 
 
 def main(url, from_time, to_time, stepsize, reset, debug, silent, batchsize = 10, threads=-1, outputdir=None):
