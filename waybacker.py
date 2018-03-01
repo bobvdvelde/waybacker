@@ -11,6 +11,7 @@ import logging
 import datetime
 import re
 from dateutil import relativedelta
+from dateutil import parser as timeparser
 import string
 from joblib import Parallel, delayed
 import argparse
@@ -19,7 +20,35 @@ logging.basicConfig(level="CRITICAL")
 logger = logging.getLogger(__name__)
 
 WEB_ARCHIVE = "https://web.archive.org/web"
-DATADIR     = "data"
+DATADIR     = os.path.join(os.path.dirname(os.path.realpath(__file__)),"data")
+CACHEFILE    = os.path.join(DATADIR,'.cache')
+
+def cache_load(url):
+    if os.path.exists(CACHEFILE):
+        contents = json.load(open(CACHEFILE))
+        return contents.get(url,{})
+    else:
+        return {}
+
+def cache_save(url,status):
+    has_from      = status.get('from',False)
+    has_to        = status.get('to', False)
+    has_current   = type(status.get('current', False))==int
+    has_direction = status.get('direction',False)
+    if has_from and has_to and has_current and has_direction:
+        if os.path.exists(CACHEFILE):
+            logger.debug("Updating existing cachefile at {CACHEFILE}".format(CACHEFILE=CACHEFILE))
+            cache = json.load(open(CACHEFILE))
+        else:
+            cache = {}
+        cache[url] = status
+        json.dump(cache, open(CACHEFILE,'w'),indent=4)
+    else:
+        logger.critical("Uncorrect status supplied: {status}".format(status=status))
+        logger.critical("Missing from      : {has_from}".format(**locals()))
+        logger.critical("Missing to        : {has_to}".format(**locals()))
+        logger.critical("Missing current   : {has_current}".format(**locals()))
+        logger.critical("Missing direction : {has_direction}".format(**locals()))
 
 def walk_times(start='now', end='now', step='-2sec'):
     '''Generator for timestamps
@@ -43,7 +72,7 @@ def walk_times(start='now', end='now', step='-2sec'):
     Yield
     ----
     tuple
-        from_datetime, to_datetime, step, total_steps
+        from_datetime, to_datetime, step, total_steps, direction
 
     '''
 
@@ -57,8 +86,8 @@ def walk_times(start='now', end='now', step='-2sec'):
             if arg in ['now','NOW']:
                 return datetime.datetime.now()
 
-            # DD-MM-YY(YY) dateform
-            dateform = re.compile('(?P<day>[0-9]{1,2})-(?P<month>[0-9]{1,2})-(?P<year>[0-9]{1,4})')
+           # DD-MM-YY(YY) dateform
+            dateform = re.compile('^(?P<day>[0-9]{1,2})-(?P<month>[0-9]{1,2})-(?P<year>[0-9]{1,4})$')
             
             if dateform.search(arg):
                 dates = {k:int(v) for k,v in dateform.search(arg).groupdict().items() if v}
@@ -73,6 +102,16 @@ def walk_times(start='now', end='now', step='-2sec'):
 
                 else:
                     return relativedelta.relativedelta(**xtimefound)
+            # datetime format
+            try:
+                result = timeparser.parse(arg)
+                logger.debug("turned {arg} into {result}".format(arg=arg, result=result))
+                return result
+
+            except ValueError:
+                logger.debug("{arg} turns out, not even a isoformatted string".format(arg=arg))
+
+ 
         logger.critical("Unkown time specification")
 
     starttime = parse_time_argument(start, to_abs=True)
@@ -94,18 +133,20 @@ def walk_times(start='now', end='now', step='-2sec'):
     if endtime < starttime:
         if not starttime + stepsize < starttime:
             logger.info( "Steps to the past should be negative! (i.e. -2min)")
-        stepsize = relativedelta.relativedelta(-1*stepsecs)
-        downward = True
+            stepsize = relativedelta.relativedelta(seconds=-1*stepsecs)
+            logger.info("Corrected stepsize to: {stepsize}".format(stepsize=stepsize))
+        direction = "downward"
     elif starttime > endtime:
         if starttime + stepsize > starttime:
             logger.info("Steps to the future should be positive! (i.e. 2min)")
-        stepsize = relativedelta.relativedelta(-1*stepsecs)
-        downward = False
+            stepsize = relativedelta.relativedelta(seconds=-1*stepsecs)
+            logger.info("Corrected stepsize to: {stepsize}".format(stepsize=stepsize))
+        direction = 'upward'
     start_datetime = starttime
     end_datetime = endtime
 
     for step in range(steps):
-        yield start_datetime, end_datetime, step, steps
+        yield start_datetime, end_datetime, step, steps, direction
         start_datetime = start_datetime + stepsize
 
 def extract_timestamp(wayback_url):
@@ -117,7 +158,7 @@ def extract_timestamp(wayback_url):
     logger.debug("Timestamp is {timestamp}".format(timestamp=timestamp))
     return timestamp
 
-def get_page(url, timestamp):
+def get_page(url, timestamp, **kwargs):
     '''Retrieve a page from the Wayback Archive for a specific timestamp
 
     Parameters
@@ -128,6 +169,8 @@ def get_page(url, timestamp):
         A datetime object indicating the preferred wayback time to fetch. The
         Wayback Archive automatically grabs the closest available date, see
         https://archive.org/about/faqs.php#265 
+    kwargs : keyword arguments
+        A way to pass additional information about the pages. 
 
     Returns
     ----
@@ -143,6 +186,7 @@ def get_page(url, timestamp):
         encoding               : the requests inferred encoding of the text
         response_headers       : the requests based response headers
         sec_elapsed            : the seconds between the request and the response to the wayback archive
+        **kwargs
         
     '''
     # Format target URL
@@ -180,6 +224,7 @@ def get_page(url, timestamp):
         'retrieved_at'          : end_of_capture.isoformat()
         
     }
+    page_dict.update(**kwargs)
     return page_dict
 
 def clean_filename(url):
@@ -194,21 +239,42 @@ def check_last(filename):
         logger.debug("{filename} found in {DATADIR}".format(filename=filename, DATADIR=DATADIR))
         target = os.path.join(DATADIR, filename)
         try:
-            last = json.loads(os.popen('tail -n 1 {target}'.format(target=target)).read())
+            last_part = os.popen('tail -n 3 {target}'.format(target=target)).read()
+            content = {}
+            for n,line in enumerate(last_part.split(os.linesep)):
+                try:
+                    content = json.loads(line)
+                except:
+                    badnum = 4-(n)
+                    logger.debug("Corrupted JSON found")
+                    os.popen("head -n-{badnum} {target} > {target}".format(badnum=badnum, target=target))
+                    break
+            return content
+            
         except:
             return {}
     else:
         last = {}
     return last
 
-def main(url, from_time, to_time, stepsize, reset, debug, silent, batchsize = 10, threads=-1):
 
+def main(url, from_time, to_time, stepsize, reset, debug, silent, batchsize = 10, threads=-1, outputdir=None):
+    global DATADIR
+    global CACHEFILE
+    if outputdir and outputdir != DATADIR:
+        logger.info("Changing output directory to {outputdir}".format(outputdir=outputdir))
+        DATADIR = outputdir
+        CACHEFILE = os.path.join(DATADIR,'.cache')
+        logger.debug("Set output to {DATADIR}".format(DATADIR=DATADIR))
+
+    # Set appropriate logging levels
     if debug:
-        logger.setLevel("DEBUG")
+        logger.setLevel(f"DEBUG")
         logger.debug("Debugmode ENGAGED")
     elif not silent:
         logger.setLevel("INFO")
 
+    # Prepare output location
     target_file = clean_filename(url)
 
     os.makedirs(DATADIR, exist_ok=True)
@@ -216,24 +282,37 @@ def main(url, from_time, to_time, stepsize, reset, debug, silent, batchsize = 10
     if target_file in os.listdir(DATADIR) and reset:
         logger.info("Resetting file {filename}".format(filename=os.path.join(DATADIR,target_file)))
         os.remove(os.path.join(DATADIR,target_file))
+    if os.path.exists(CACHEFILE) and reset:
+        logger.debug("Resetting cache {CACHEFILE}".format(CACHEFILE=CACHEFILE))
+        os.remove(CACHEFILE)
     
-    last_state = check_last(target_file)
-    if last_state:
-        logger.info("Prior data found")
-        last_time_retrieved = last_state.get('target_timestamp',None)
-        last_retrieved = last_state.get('retrieved_at',None)
-        logger.info("Resuming from {last_time_retrieved} retrieved at {last_retrieved}".format(
-                    last_time_retrieved=last_time_retrieved, last_retrieved=last_retrieved))
+    # Check resume state
+    status = cache_load(url)
+    if status:
+        logger.info("Resuming previous collection:\n {status}".format(status=status))
+        from_time = status['from']
+        to_time   = status['to']
+        stepsize  = status['stepsize']
+        current   = status['current']
+    else:
+        current = 0
+        status['from'     ] = from_time
+        status['to'       ] = to_time
+        status['stepsize' ] = stepsize
+        status['current'  ] = current
+        status['direction'] = 'unknown'
 
+    # Do data collection 
     with open(os.path.join(DATADIR,target_file), 'a+') as f:
         batch = []
-        for start, _,  step, total in walk_times(from_time, to_time, stepsize):
-            if last_state and start.isoformat() == last_retrieved:
-                last_state = {}
-                continue
-            elif last_state:
-                continue
-            batch.append({'url':url, 'timestamp':start})
+        for start, _,  step, total, direction in walk_times(from_time, to_time, stepsize):
+            if status['from'] == 'now':
+                status['from'] = start.isoformat()
+            status['direction'] = direction
+            if not step%10: logger.debug("now at {step} of {total}".format(step=step, total=total))
+            if step < current:
+                continue    
+            batch.append({'url':url, 'timestamp':start, 'step':step})
             if len(batch)==batchsize:
                 perc=(step/total)*100
                 logger.info("Processing {batchsize} pages for {url} at step {step:6.0f} of {total:6.0f} {perc:3.2f}%".format(
@@ -241,11 +320,17 @@ def main(url, from_time, to_time, stepsize, reset, debug, silent, batchsize = 10
                 retrieved = Parallel(threads)(delayed(get_page)(**args) for args in batch)
                 for hit in retrieved:
                     f.write(json.dumps(hit)+"\n")
+                    status['current'] = hit['step']
+                logger.info("Wrote batch to disk")
+                cache_save(url,status)
                 batch=[]
         retrieved = Parallel(threads)(delayed(get_page)(**args) for args in batch)
         for hit in retrieved:
             f.write(json.dumps(hit)+"\n")
-            batch=[]   
+            status['current'] = hit['step']
+            cache_save(url,status)
+        logger.info("wrote last batch to disk")
+        batch=[]   
     logger.info("Succesfully stopped retrieval")
 
 
@@ -261,16 +346,22 @@ if __name__ == "__main__":
                                              "numbers express steps backwards in time. X can be the increment size:\n"
                                              "s : seconds, m : minutes, h : hours, D : day, M : Month, Y : Year ",
                         default="-1D")
+    parser.add_argument('-b','--batchsize', help="the number of results to bundle, (higher means bigger times between "
+                                                 "writing to disk, but also lower overhead)",
+                        type=int, default=10)
+                        )
     parser.add_argument("-d", "--debug", help="print debug statements", default=False, action="store_true")
     parser.add_argument("-r", "--reset", help="remove prior results and start over", default=False, action="store_true")
     parser.add_argument("-q", "--quiet",help="do not print progress to stdout", default=False, action='store_true')
-    parser.add_argument("-p", "--parallel", help="number of parallel_threads to use", type=int)
+    parser.add_argument("-p", "--parallel", help="number of parallel_threads to use", type=int, default=-1)
     parser.add_argument("url", help="the URL to obtain from the wayback archive")
+    parser.add_argument("-o","--output-dir", help="Directory to store results", default=DATADIR)
 
     args = parser.parse_args()
     
+    
     main(url=args.url, from_time=args.fromtime, to_time=args.totime, stepsize=args.step, reset=args.reset, debug=args.debug, 
-         silent=args.quiet, threads=args.parallel)
+         silent=args.quiet, threads=args.parallel, outputdir=args.output_dir)
     
     
     
