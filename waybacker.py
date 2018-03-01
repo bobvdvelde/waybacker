@@ -246,7 +246,7 @@ def main(url, from_time, to_time, stepsize, reset, debug, silent, batchsize = 10
 
     # Set appropriate logging levels
     if debug:
-        logger.setLevel(f"DEBUG")
+        logger.setLevel("DEBUG")
         logger.debug("Debugmode ENGAGED")
     elif not silent:
         logger.setLevel("INFO")
