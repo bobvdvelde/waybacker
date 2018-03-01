@@ -326,7 +326,7 @@ if __name__ == "__main__":
     parser.add_argument('-b','--batchsize', help="the number of results to bundle, (higher means bigger times between "
                                                  "writing to disk, but also lower overhead)",
                         type=int, default=10)
-                        )
+                        
     parser.add_argument("-d", "--debug", help="print debug statements", default=False, action="store_true")
     parser.add_argument("-r", "--reset", help="remove prior results and start over", default=False, action="store_true")
     parser.add_argument("-q", "--quiet",help="do not print progress to stdout", default=False, action='store_true')
