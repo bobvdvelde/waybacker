@@ -50,6 +50,17 @@ def cache_save(url,status):
         logger.critical("Missing current   : {has_current}".format(**locals()))
         logger.critical("Missing direction : {has_direction}".format(**locals()))
 
+class NonResponse():
+    status_code = 404
+    text        = ''
+    encoding    = 'UTF-8'
+    headers     = {}
+    
+    def __init__(self, url,reason):
+        self.url    = url
+        self.reason = reason
+    
+
 def walk_times(start='now', end='now', step='-2sec'):
     '''Generator for timestamps
 
@@ -199,7 +210,11 @@ def get_page(url, timestamp, **kwargs):
     # Retrieving page
     logger.debug("Retrieving from {target_url}".format(target_url=target_url))
     start_of_capture = datetime.datetime.now()
-    response = requests.get(target_url)
+    try:
+        response = requests.get(target_url)
+    except requests.exceptions.TooManyRedirects:
+        response = NonResponse(url=target_url, reason="Too many redirects")   
+        
     if response.status_code == 200:
         logger.debug("Succesfully retrieved {target_url}".format(target_url=target_url))
     else:
