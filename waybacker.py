@@ -45,18 +45,40 @@ def cache_save(url,status):
         json.dump(cache, open(CACHEFILE,'w'),indent=4)
     else:
         logger.critical("Uncorrect status supplied: {status}".format(status=status))
-        logger.critical("Missing from      : {has_from}".format(**locals()))
-        logger.critical("Missing to        : {has_to}".format(**locals()))
-        logger.critical("Missing current   : {has_current}".format(**locals()))
-        logger.critical("Missing direction : {has_direction}".format(**locals()))
+        logger.critical("Missing or incorrect from      : {has_from}".format(**locals()))
+        logger.critical("Missing or incorrect to        : {has_to}".format(**locals()))
+        logger.critical("Missing or incorrect current   : {has_current}".format(**locals()))
+        logger.critical("Missing or incorrect direction : {has_direction}".format(**locals()))
 
 class NonResponse():
+    """Mock-Response class for failed attempts
+
+    This class serves to mock responses in case of failed attempts. For example:
+    Some urls will yield circular redirects, triggering the 'TooManyRedirects'
+    exception. When catching this error, the NonResponse class serves to mock
+    the response object as an empty result for this page. 
+
+    """
     status_code = 404
     text        = ''
     encoding    = 'UTF-8'
     headers     = {}
     
     def __init__(self, url,reason):
+        """Initialize the mock-response with the url that was sought and 
+        the reason for failure
+    
+        Parameters
+        ----
+        url : string
+            The url attribute of the mock response, most often the page 
+            that should have been retrieved.
+        reason : string
+            The reason for this Mock response, most likely the error 
+            or an explanation about why this response does not contain
+            any content.
+    
+        """
         self.url    = url
         self.reason = reason
     
@@ -161,6 +183,20 @@ def walk_times(start='now', end='now', step='-2sec'):
         start_datetime = start_datetime + stepsize
 
 def extract_timestamp(wayback_url):
+    """from a wayback archive url, extract the appropriate timestamp as a datetime object
+
+    Parameters
+    ----
+    wayback_url : string
+        The wayback archive URL, formatted according to https://archive.org/about/faqs.php#265.
+        for example "https://web.archive.org/web/20150420000044/http://online.wsj.com/", where
+        the notation is "https://web.archive.org/web/<YYYY><mm><dd><HH><MM><SS>/<target_url>".
+
+    Returns
+    ----
+    datetime object
+
+    """
     logger.debug("Extracting timstamp from {wayback_url}".format(wayback_url=wayback_url))
     no_wayback        = wayback_url[len(WEB_ARCHIVE)+1:]
     timestring, rest  = no_wayback.split('/',1)
@@ -243,6 +279,21 @@ def get_page(url, timestamp, **kwargs):
     return page_dict
 
 def clean_filename(url):
+    """Make a URL into an posix friendly filename
+
+    Parameters
+    ----
+    url : string
+        string that contains illegal characters, e.g. "http://online.wsj.com/"
+
+    Returns
+    ----
+    string
+        Filename filtered to include only ascii_letters and digits + '-_() '
+        periods ('.') and colons (':') are replaced with underscores ('_'),
+        e.g.: "https_www_wsj_com"
+
+    """
     valid_chars = "-_() %s%s" % (string.ascii_letters, string.digits)
     nodot       = url.replace('.','_').replace(':','_')
     filename = ''.join([c for c in nodot if c in valid_chars])
@@ -251,6 +302,55 @@ def clean_filename(url):
 
 
 def main(url, from_time, to_time, stepsize, reset, debug, silent, batchsize = 10, threads=-1, outputdir=None):
+    """The main eventloop for wayback archive retrieval
+
+    Process for retrieval:
+    1) override global output directory and cachefile location if required (set by outputdir)
+    2) set appropriate logging levels depending on debug and silent flags
+    3) For given url, create posix filename and ensure the output directory exists, reset if reset==True
+    4) Check if a Cachefile exists and contains an entry for this URL, resume if true
+    5) Open file and start parallel retrieval with batch write to disk
+
+    Parameters
+    ----
+    url : string
+        The original URL to retrieve from the wayback archive, e.g. "http://online.wsj.com/"
+    from_time : string
+        time to start, expressed as 'now', '01-01-2018', '-2D' formats
+    to_time   : string
+        time to stop, expressed as 'now', '01-01-2018', '-2D' formats
+    stepsize  : string
+        stepsize to take between pages, takes the '(-)X' format, where negative
+        numbers express steps backwards in time. X can be the increment size:
+        s : seconds, 
+        m : minutes, 
+        h : hours, 
+        D : day, 
+        M : Month, 
+        Y : Year
+        Example : '-2D', for get page with 48 hour intervals from wayback archive
+    reset : bool
+        Whether to clear cache AND data and start over
+    debug : bool
+        Whether to log debug statements
+    silent : bool
+        Whether to log INFO statements
+    batchsize : int (default=10)
+        The number of responses to write to disk together
+    threads : int (default=-1)
+        The number of parallel threads to use for retrieval, defaults to N-cores available -1
+    outputdir : string (default='data')
+        The directory to write output AND cachefile to, defaults to "data"
+
+    Returns
+    ----
+    None
+
+    Notes:
+        Function writes data to disk
+
+    """
+    # Override output directory if required
     global DATADIR
     global CACHEFILE
     if outputdir and outputdir != DATADIR:
